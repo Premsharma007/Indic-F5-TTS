@@ -1,0 +1,4 @@
+git+https://github.com/6Morpheus6/Indic-F5.git
+gradio
+hf-xet
+spaces
