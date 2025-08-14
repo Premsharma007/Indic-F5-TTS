@@ -52,7 +52,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device", device)
 model = model.to(device)
 
-# Example Data (Multiple Examples)
+'''# Example Data (Multiple Examples)
 EXAMPLES = [
     {
         "audio_name": "PAN_F (Happy)",
@@ -91,21 +91,14 @@ EXAMPLES = [
 for example in EXAMPLES:
     sample_rate, audio_data = load_audio_from_url(example["audio_url"])
     example["sample_rate"] = sample_rate
-    example["audio_data"] = audio_data
+    example["audio_data"] = audio_data'''
 
 
 # Define Gradio interface with layout adjustments
 with gr.Blocks() as iface:
     gr.Markdown(
         """
-        # **IndicF5: High-Quality Text-to-Speech for Indian Languages**
-
-        [![Hugging Face](https://img.shields.io/badge/HuggingFace-Model-orange)](https://huggingface.co/ai4bharat/IndicF5)
-
-        We release **IndicF5**, a **near-human polyglot** **Text-to-Speech (TTS)** model trained on **1417 hours** of high-quality speech from **[Rasa](https://huggingface.co/datasets/ai4bharat/Rasa), [IndicTTS](https://www.iitm.ac.in/donlab/indictts/database), [LIMMITS](https://sites.google.com/view/limmits24/), and [IndicVoices-R](https://huggingface.co/datasets/ai4bharat/indicvoices_r)**.  
-
-        IndicF5 supports **11 Indian languages**:  
-        **Assamese, Bengali, Gujarati, Hindi, Kannada, Malayalam, Marathi, Odia, Punjabi, Tamil, Telugu.**  
+        # **Spider『X』(T2S) Indic_F5 Speech Model - 1.0** 
         
         Generate speech using a reference prompt audio and its corresponding text.
         """
@@ -121,7 +114,7 @@ with gr.Blocks() as iface:
         with gr.Column():
             output_audio = gr.Audio(label="Generated Speech", type="numpy")
     
-    # Add multiple examples
+    '''# Add multiple examples
     examples = [
         [ex["synth_text"], (ex["sample_rate"], ex["audio_data"]), ex["ref_text"]] for ex in EXAMPLES
     ]
@@ -130,7 +123,7 @@ with gr.Blocks() as iface:
         examples=examples,
         inputs=[text_input, ref_audio_input, ref_text_input],
         label="Choose an example:"
-    )
+    )'''
 
     submit_btn.click(synthesize_speech, inputs=[text_input, ref_audio_input, ref_text_input], outputs=[output_audio])
 
