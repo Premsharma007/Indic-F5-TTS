@@ -8,22 +8,77 @@ import tempfile
 import numpy as np
 import gradio as gr
 import soundfile as sf
-import time  # ⬅ Added for timing
+import time
+import re
+import os
+from datetime import datetime
 from transformers import AutoModel
 
 warnings.filterwarnings("ignore", message=".*copying from a non-meta parameter.*")
 
-# Function to load reference audio from URL
-def load_audio_from_url(url):
-    response = requests.get(url)
-    if response.status_code == 200:
-        audio_data, sample_rate = sf.read(io.BytesIO(response.content))
-        return sample_rate, audio_data
-    return None, None
+# Paths
+REF_DIR = "Reference_Text_Audio"
+OUTPUT_DIR = "Outputs"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Helper: load reference audio & text from folder if available
+def load_default_reference():
+    ref_audio_path = os.path.join(REF_DIR, "Reference_Audio.mp3")
+    ref_text_path = os.path.join(REF_DIR, "Reference_Text.txt")
+
+    audio_tuple, text_str = None, ""
+    if os.path.exists(ref_audio_path):
+        audio_data, sr = librosa.load(ref_audio_path, sr=None, mono=True)
+        audio_tuple = (sr, audio_data.astype(np.float32))
+    if os.path.exists(ref_text_path):
+        with open(ref_text_path, "r", encoding="utf-8") as f:
+            text_str = f.read().strip()
+    return audio_tuple, text_str
+
+# Helper: split text into natural chunks
+def split_into_chunks(text, max_chars=600):
+    parts = re.split(r'(?<=[\.\?\!])\s+', text.strip())
+    chunks, buf, cur_len = [], [], 0
+    for p in parts:
+        if cur_len + len(p) + 1 > max_chars and buf:
+            chunks.append(" ".join(buf))
+            buf, cur_len = [p], len(p)
+        else:
+            buf.append(p)
+            cur_len += len(p) + 1
+    if buf:
+        chunks.append(" ".join(buf))
+    return chunks if chunks else [text]
 
 @spaces.GPU
-def synthesize_speech(text, ref_audio, ref_text):
+def synthesize_speech(text, ref_audio, ref_text, txt_file=None, ref_txt_file=None):
     start_time = time.time()
+
+    # If TXT file uploaded for synthesis → override
+    txt_filename = None
+    if txt_file is not None:
+        try:
+            txt_filename = os.path.splitext(os.path.basename(txt_file.name))[0]
+            with open(txt_file.name, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception:
+            pass
+
+    # Auto-load default reference if user did not upload
+    if ref_audio is None and ref_text.strip() == "":
+        default_audio, default_text = load_default_reference()
+        if default_audio is not None:
+            ref_audio = default_audio
+        if default_text:
+            ref_text = default_text
+
+    # If separate reference text file uploaded
+    if ref_txt_file is not None:
+        try:
+            with open(ref_txt_file.name, "r", encoding="utf-8") as f:
+                ref_text = f.read().strip()
+        except Exception:
+            pass
 
     # Handle missing inputs
     if ref_audio is None or ref_text.strip() == "":
@@ -37,26 +92,43 @@ def synthesize_speech(text, ref_audio, ref_text):
         total_time_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
         return (24000, np.zeros(1, dtype=np.float32)), total_time_str
 
-    # Save ref audio
+    # Save ref audio to temp
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
         sf.write(temp_audio.name, audio_data, samplerate=sample_rate, format='WAV')
         temp_audio.flush()
 
-    # Generate speech
+    final_audio = []
+    silence_gap = np.zeros(int(0.2 * 24000), dtype=np.float32)  # 200ms silence at 24kHz
+
     try:
-        audio = model(text, ref_audio_path=temp_audio.name, ref_text=ref_text)
+        # Process text in chunks
+        for chunk in split_into_chunks(text):
+            audio = model(chunk, ref_audio_path=temp_audio.name, ref_text=ref_text)
+
+            if audio.dtype == np.int16:
+                audio = audio.astype(np.float32) / 32768.0
+            audio = np.asarray(audio, dtype=np.float32).flatten()
+
+            final_audio.append(audio)
+            final_audio.append(silence_gap)
+
+        audio_out = np.concatenate(final_audio) if final_audio else np.zeros(1, dtype=np.float32)
+
     except Exception as e:
         print(f"Error generating audio: {e}")
-        total_time_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-        return (24000, np.zeros(1, dtype=np.float32)), total_time_str
+        audio_out = np.zeros(1, dtype=np.float32)
 
-    # Normalize
-    if audio.dtype == np.int16:
-        audio = audio.astype(np.float32) / 32768.0
+    # Save output to Outputs/
+    if txt_filename:  # If text file was uploaded
+        out_name = f"TTS_{txt_filename}.wav"
+    else:  # No text file → use timestamp
+        out_name = f"TTS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+    out_path = os.path.join(OUTPUT_DIR, out_name)
+    sf.write(out_path, audio_out, 24000)
+    print(f"✅ Output saved at: {out_path}")
 
     total_time_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    return (24000, audio), total_time_str
-
+    return (24000, audio_out), total_time_str
 
 
 # Load TTS model
@@ -66,86 +138,37 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device", device)
 model = model.to(device)
 
-'''# Example Data (Multiple Examples)
-EXAMPLES = [
-    {
-        "audio_name": "PAN_F (Happy)",
-        "audio_url": "https://github.com/AI4Bharat/IndicF5/raw/refs/heads/main/prompts/PAN_F_HAPPY_00002.wav",
-        "ref_text": "ਇੱਕ ਗ੍ਰਾਹਕ ਨੇ ਸਾਡੀ ਬੇਮਿਸਾਲ ਸੇਵਾ ਬਾਰੇ ਦਿਲੋਂਗਵਾਹੀ ਦਿੱਤੀ ਜਿਸ ਨਾਲ ਸਾਨੂੰ ਅਨੰਦ ਮਹਿਸੂਸ ਹੋਇਆ।",
-        "synth_text": "मैं बिना किसी चिंता के अपने दोस्तों को अपने ऑटोमोबाइल एक्सपर्ट के पास भेज देता हूँ क्योंकि मैं जानता हूँ कि वह निश्चित रूप से उनकी सभी जरूरतों पर खरा उतरेगा।"
-    },
-    {
-        "audio_name": "TAM_F (Happy)",
-        "audio_url": "https://github.com/AI4Bharat/IndicF5/raw/refs/heads/main/prompts/TAM_F_HAPPY_00001.wav",
-        "ref_text": "நான் நெனச்ச மாதிரியே அமேசான்ல பெரிய தள்ளுபடி வந்திருக்கு. கம்மி காசுக்கே அந்தப் புது சேம்சங் மாடல வாங்கிடலாம்.",
-        "synth_text": "ഭക്ഷണത്തിന് ശേഷം തൈര് സാദം കഴിച്ചാൽ ഒരു ഉഷാറാണ്!"
-    },
-    {
-        "audio_name": "MAR_F (WIKI)",
-        "audio_url": "https://github.com/AI4Bharat/IndicF5/raw/refs/heads/main/prompts/MAR_F_WIKI_00001.wav",
-        "ref_text": "दिगंतराव्दारे अंतराळ कक्षेतला कचरा चिन्हित करण्यासाठी प्रयत्न केले जात आहे.",
-        "synth_text": "प्रारंभिक अंकुर छेदक. मी सोलापूर जिल्ह्यातील माळशिरस तालुक्यातील शेतकरी गणपत पाटील बोलतोय. माझ्या ऊस पिकावर प्रारंभिक अंकुर छेदक कीड आढळत आहे. क्लोरँट्रानिलीप्रोल (कोराजेन) वापरणे योग्य आहे का? त्याचे प्रमाण किती असावे?"
-    },
-    {
-        "audio_name": "MAR_M (WIKI)",
-        "audio_url": "https://github.com/AI4Bharat/IndicF5/raw/refs/heads/main/prompts/MAR_M_WIKI_00001.wav",
-        "ref_text": "या प्रथाला एकोणीसशे पंचातर ईसवी पासून भारतीय दंड संहिताची धारा चारशे अठ्ठावीस आणि चारशे एकोणतीसच्या अन्तर्गत निषेध केला.",
-        "synth_text": "जीवाणू करपा. मी अहमदनगर जिल्ह्यातील राहुरी गावातून बाळासाहेब जाधव बोलतोय. माझ्या डाळिंब बागेत जीवाणू करपा मोठ्या प्रमाणात दिसतोय. स्ट्रेप्टोसायक्लिन आणि कॉपर ऑक्सिक्लोराईड फवारणीसाठी योग्य प्रमाण काय असावे?"
-    },
-    {
-        "audio_name": "KAN_F (Happy)",
-        "audio_url": "https://github.com/AI4Bharat/IndicF5/raw/refs/heads/main/prompts/KAN_F_HAPPY_00001.wav",
-        "ref_text": "ನಮ್‌ ಫ್ರಿಜ್ಜಲ್ಲಿ  ಕೂಲಿಂಗ್‌ ಸಮಸ್ಯೆ ಆಗಿ ನಾನ್‌ ಭಾಳ ದಿನದಿಂದ ಒದ್ದಾಡ್ತಿದ್ದೆ, ಆದ್ರೆ ಅದ್ನೀಗ ಮೆಕಾನಿಕ್ ಆಗಿರೋ ನಿಮ್‌ ಸಹಾಯ್ದಿಂದ ಬಗೆಹರಿಸ್ಕೋಬೋದು ಅಂತಾಗಿ ನಿರಾಳ ಆಯ್ತು ನಂಗೆ.",
-        "synth_text": "চেন্নাইয়ের শেয়ারের অটোর যাত্রীদের মধ্যে খাবার ভাগ করে খাওয়াটা আমার কাছে মন খুব ভালো করে দেওয়া একটা বিষয়।"
-    },
-]
 
-
-# Preload all example audios
-for example in EXAMPLES:
-    sample_rate, audio_data = load_audio_from_url(example["audio_url"])
-    example["sample_rate"] = sample_rate
-    example["audio_data"] = audio_data'''
-
-
-# Define Gradio interface with layout adjustments
+# Define Gradio interface
 with gr.Blocks() as iface:
     gr.Markdown(
         """
-        # **Spider『X』(T2S) Indic_F5 Speech Model - 1.0** 
+        # **Spider『X』(T2S) Indic_F5 Speech Model - 1.1** 
         
-        Generate speech using a reference prompt audio and its corresponding text.
+        Generate speech using a reference prompt audio and its corresponding text.  
+        (If available, system auto-loads from `Reference_Text_Audio/`)
         """
     )
     
     with gr.Row():
         with gr.Column():
-            text_input = gr.Textbox(label="Text to Synthesize", placeholder="Enter the text to convert to speech...", lines=3)
-            ref_audio_input = gr.Audio(type="numpy", label="Reference Prompt Audio")
-            ref_text_input = gr.Textbox(label="Text in Reference Prompt Audio", placeholder="Enter the transcript of the reference audio...", lines=2)
+            text_input = gr.Textbox(label="Text to Synthesize", placeholder="Enter text or upload TXT file...", lines=3)
+            txt_file_input = gr.File(label="Upload TXT File (optional)", file_types=[".txt"])
+            ref_audio_input = gr.Audio(type="numpy", label="Reference Prompt Audio (optional)")
+            ref_text_input = gr.Textbox(label="Reference Audio Transcript", placeholder="Enter transcript or auto-loads...", lines=2)
+            ref_txt_file_input = gr.File(label="Upload Reference Text File (optional)", file_types=[".txt"])
             submit_btn = gr.Button("🎤 Generate Speech", variant="primary")
         
         with gr.Column():
             output_audio = gr.Audio(label="Generated Speech", type="numpy")
             time_taken = gr.Label(label="Total Time Taken (HH:MM:SS)") 
 
-    
-    '''# Add multiple examples
-    examples = [
-        [ex["synth_text"], (ex["sample_rate"], ex["audio_data"]), ex["ref_text"]] for ex in EXAMPLES
-    ]
-    
-    gr.Examples(
-        examples=examples,
-        inputs=[text_input, ref_audio_input, ref_text_input],
-        label="Choose an example:"
-    )'''
     theme=gr.themes.Soft()
     submit_btn.click(
-    synthesize_speech,
-    inputs=[text_input, ref_audio_input, ref_text_input],
-    outputs=[output_audio, time_taken] 
-)
+        synthesize_speech,
+        inputs=[text_input, ref_audio_input, ref_text_input, txt_file_input, ref_txt_file_input],
+        outputs=[output_audio, time_taken] 
+    )
 
 
 iface.launch()
