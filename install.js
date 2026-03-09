@@ -1,6 +1,17 @@
 module.exports = {
+  requires: {
+    bundle: "ai",
+  },
   run: [
-    
+    {
+      method: "shell.run",
+      params: {
+        venv: "env",
+        message: [
+          "uv pip install -r requirements.txt --no-cache"
+        ],
+      }
+    },
     {
       method: "script.start",
       params: {
@@ -11,15 +22,6 @@ module.exports = {
           // triton: true
           // sageattention: true
         }
-      }
-    },
-    {
-      method: "shell.run",
-      params: {
-        venv: "env",
-        message: [
-          "uv pip install -r requirements.txt --no-cache"
-        ],
       }
     }
   ]
