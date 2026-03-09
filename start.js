@@ -1,4 +1,7 @@
 module.exports = {
+  requires: {
+    bundle: "ai",
+  },
   daemon: true,
   run: [
     {
@@ -23,4 +26,3 @@ module.exports = {
     },
   ]
 }
-
